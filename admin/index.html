@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>PickleManage admin</title>
+<style>
+:root{--accent:#15803D;--bg:#F5F6F7;--text:#111827;--muted:#5B6370;--border:rgba(17,24,39,.12);--danger:#B91C1C}
+*{box-sizing:border-box;margin:0;padding:0}
+[hidden]{display:none!important}
+body{font-family:Inter,-apple-system,system-ui,sans-serif;font-size:16px;line-height:1.5;color:var(--text);background:var(--bg)}
+button,input{font:inherit;color:inherit}
+button{min-height:44px;padding:0 16px;border:1px solid var(--border);border-radius:10px;background:#fff;font-weight:600;cursor:pointer}
+button.main{background:var(--accent);border-color:var(--accent);color:#fff}
+button:disabled{opacity:.6;cursor:default}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.wrap{max-width:1040px;margin:0 auto;padding:24px}
+.login{max-width:360px;margin:18vh auto 0;padding:32px}
+.login button{width:100%;margin-top:24px}
+h1{font-size:24px;letter-spacing:-.02em}
+.top{display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:24px}
+.card{background:#fff;border:1px solid var(--border);border-radius:16px;padding:24px;margin-bottom:24px}
+.add{display:grid;grid-template-columns:1fr 200px auto;gap:16px;align-items:end}
+label{display:block;font-size:14px;font-weight:600;margin-bottom:8px}
+input{width:100%;min-height:44px;padding:0 12px;border:1px solid rgba(17,24,39,.45);border-radius:10px;background:#fff}
+#code{text-transform:uppercase;letter-spacing:.08em}
+.msg{min-height:24px;font-size:14px;margin-top:8px}
+.msg.bad{color:var(--danger)}
+.scroll{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:15px}
+th{font-size:13px;color:var(--muted);text-align:left;font-weight:600}
+th,td{padding:12px 16px 12px 0;border-bottom:1px solid var(--border);vertical-align:middle;white-space:nowrap}
+td:first-child{white-space:normal;min-width:140px;font-weight:600;overflow-wrap:anywhere}
+tbody tr:last-child td{border:0}
+td code{font-size:15px;letter-spacing:.06em}
+.acts{display:flex;gap:8px}
+.off td:not(:last-child),.muted{color:var(--muted)}
+summary{cursor:pointer;min-height:44px;display:flex;align-items:center;text-decoration:underline}
+details ul{list-style:none;max-height:200px;overflow:auto;font-size:14px}
+@media(max-width:720px){.add{grid-template-columns:1fr}.wrap{padding:16px}.card{padding:16px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <section class="card login" id="login">
+    <h1>PickleManage admin</h1>
+    <button class="main" id="signin" disabled>Sign in with Google</button>
+    <p class="msg bad" id="loginMsg" role="alert"></p>
+  </section>
+
+  <main id="panel" hidden>
+    <div class="top"><h1>Demo access</h1><button id="signout">Sign out</button></div>
+    <section class="card">
+      <form class="add" id="add" novalidate>
+        <div><label for="name">Client</label><input id="name" maxlength="100" autocomplete="off"></div>
+        <div><label for="code">Code</label><input id="code" maxlength="12" autocomplete="off" spellcheck="false"></div>
+        <button class="main" id="addBtn">Add client</button>
+      </form>
+      <p class="msg" id="msg" role="status"></p>
+    </section>
+    <section class="card">
+      <div class="scroll"><table>
+        <thead><tr><th scope="col">Client</th><th scope="col">Code</th><th scope="col">Opens</th><th scope="col">First opened</th><th scope="col">Last opened</th><th scope="col">Actions</th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table></div>
+      <p class="msg" id="note"></p>
+    </section>
+  </main>
+</div>
+
+<script type="module">
+import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
+import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
+import { getFirestore, collection, doc, onSnapshot, query, orderBy, limit, runTransaction, updateDoc, serverTimestamp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
+
+const app = initializeApp({
+  apiKey: 'AIzaSyDX1T0sFa9yWksFg-uxrCf0CtElB9GnFi4',
+  authDomain: 'picklemanager-fc0e2.firebaseapp.com',
+  projectId: 'picklemanager-fc0e2',
+  storageBucket: 'picklemanager-fc0e2.firebasestorage.app',
+  messagingSenderId: '77638250972',
+  appId: '1:77638250972:web:f81ac71c2b3b08b66f9f19'
+});
+const auth = getAuth(app), db = getFirestore(app);
+const $ = id => document.getElementById(id);
+const MAX = 2000;
+const LETTERS = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+let clients = null, sessions = null, stops = [], openRows = new Set();
+
+// Rejection sampling keeps every letter equally likely.
+function newCode() {
+  let out = '';
+  while (out.length < 6) {
+    const b = crypto.getRandomValues(new Uint8Array(1))[0];
+    if (b < 256 - 256 % LETTERS.length) out += LETTERS[b % LETTERS.length];
+  }
+  return out;
+}
+const clean = s => s.toUpperCase().replace(/[^A-Z0-9]/g, '');
+const when = t => t ? t.toDate().toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Manila' }) : '';
+function say(text, bad) { $('msg').textContent = text; $('msg').className = bad ? 'msg bad' : 'msg'; }
+
+function el(tag, text, cls) {
+  const n = document.createElement(tag);
+  if (text != null) n.textContent = text;
+  if (cls) n.className = cls;
+  return n;
+}
+function button(text, fn) { const b = el('button', text); b.type = 'button'; b.onclick = fn; return b; }
+
+function render() {
+  if (!clients || !sessions) return;
+  const byCode = new Map();
+  sessions.forEach(s => { if (!byCode.has(s.code)) byCode.set(s.code, []); byCode.get(s.code).push(s.at); });
+  const body = $('rows');
+  body.replaceChildren();
+  clients.forEach(c => {
+    const list = byCode.get(c.id) || [];          // newest first
+    const tr = el('tr', null, c.active ? '' : 'off');
+    const codeCell = el('td'); codeCell.append(el('code', c.id));
+    const opens = el('td');
+    if (list.length) {
+      const d = el('details'); d.open = openRows.has(c.id);
+      d.ontoggle = () => d.open ? openRows.add(c.id) : openRows.delete(c.id);
+      const ul = el('ul'); list.forEach(t => ul.append(el('li', when(t))));
+      d.append(el('summary', String(list.length)), ul); opens.append(d);
+    } else opens.append(el('span', 'Not opened', 'muted'));
+    const acts = el('td'), box = el('div', null, 'acts');
+    box.append(
+      button('Copy code', async () => {
+        try { await navigator.clipboard.writeText(c.id); say('Copied ' + c.id + '.'); }
+        catch { say('The code could not be copied. Select it in the table instead.', true); }
+      }),
+      button(c.active ? 'Disable' : 'Enable', async () => {
+        try { await updateDoc(doc(db, 'pm-demo-codes', c.id), { active: !c.active }); }
+        catch { say('The change could not be saved. Try again.', true); }
+      }));
+    acts.append(box);
+    tr.append(el('td', c.name + (c.active ? '' : ' (disabled)')), codeCell, opens,
+      el('td', when(list[list.length - 1])), el('td', when(list[0])), acts);
+    body.append(tr);
+  });
+  $('note').textContent = !clients.length ? 'No clients yet. Add the first one above.'
+    : sessions.length >= MAX ? 'Counts cover the latest ' + MAX + ' opens.' : '';
+}
+
+function stop() {
+  stops.forEach(f => f()); stops = []; clients = sessions = null;
+  $('rows').replaceChildren(); $('panel').hidden = true; $('login').hidden = false;
+}
+function listen() {
+  let denied = false;
+  // Firestore rules decide who gets in, so the owner email is not in this file.
+  const bad = e => {
+    if (denied) return;
+    denied = true; stop();
+    $('loginMsg').textContent = e.code === 'permission-denied'
+      ? 'This account does not have access, or the rules are not published yet.'
+      : 'The list could not load. Try again.';
+    signOut(auth);
+  };
+  stops = [
+    onSnapshot(query(collection(db, 'pm-demo-codes'), orderBy('createdAt', 'desc')), s => {
+      clients = s.docs.map(d => ({ id: d.id, ...d.data() }));
+      $('login').hidden = true; $('panel').hidden = false; render();
+    }, bad),
+    onSnapshot(query(collection(db, 'pm-demo-sessions'), orderBy('at', 'desc'), limit(MAX)), s => {
+      sessions = s.docs.map(d => d.data()); render();
+    }, bad)
+  ];
+}
+
+$('signin').onclick = async () => {
+  $('loginMsg').textContent = '';
+  const p = new GoogleAuthProvider(); p.setCustomParameters({ prompt: 'select_account' });
+  try { await signInWithPopup(auth, p); }
+  catch (e) {
+    if (e.code === 'auth/popup-closed-by-user' || e.code === 'auth/cancelled-popup-request') return;
+    $('loginMsg').textContent = e.code === 'auth/unauthorized-domain' ? 'Add this domain to Firebase Authentication, under Authorized domains.'
+      : e.code === 'auth/operation-not-allowed' ? 'Turn on Google sign-in in Firebase Authentication.'
+      : e.code === 'auth/popup-blocked' ? 'Allow popups for this site, then try again.'
+      : 'Sign-in did not finish. Try again.';
+  }
+};
+$('signout').onclick = () => signOut(auth);
+onAuthStateChanged(auth, u => { $('signin').disabled = false; stop(); if (u) listen(); });
+
+$('code').value = newCode();
+$('add').onsubmit = async e => {
+  e.preventDefault();
+  if ($('addBtn').disabled) return;
+  const name = $('name').value.trim(), code = clean($('code').value);
+  if (!name) { say('Add the client name.', true); return $('name').focus(); }
+  if (!/^[A-Z0-9]{6,12}$/.test(code)) { say('Use 6 to 12 letters and numbers for the code.', true); return $('code').focus(); }
+  $('addBtn').disabled = true;
+  try {
+    await runTransaction(db, async t => {
+      const ref = doc(db, 'pm-demo-codes', code);
+      if ((await t.get(ref)).exists()) throw new Error('taken');
+      t.set(ref, { name, active: true, createdAt: serverTimestamp() });
+    });
+    say('Added ' + name + '. Code: ' + code);
+    $('name').value = ''; $('code').value = newCode(); $('name').focus();
+  } catch (x) {
+    say(x.message === 'taken' ? 'That code is already in use. Choose another one.' : 'The client could not be saved. Try again.', true);
+  }
+  $('addBtn').disabled = false;
+};
+</script>
+</body>
+</html>

@@ -1,0 +1,3 @@
+# Separate Netlify site. Set Base directory to V2/marketing. Turn on Forms in the site settings.
+[build]
+  publish = "."
